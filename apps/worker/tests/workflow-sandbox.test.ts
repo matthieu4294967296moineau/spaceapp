@@ -425,6 +425,40 @@ it("records a legacy room-agent action failure under the workflow id", async () 
   }]);
 }, 60_000);
 
+it("persists a legacy room-agent action failure after the activity retries are exhausted", async () => {
+  const attempts: number[] = [];
+  const failures: unknown[] = [];
+  let caught: unknown;
+  await withWorker({
+    async runRoomAgentBackgroundAction() {
+      const attempt = Context.current().info.attempt;
+      attempts.push(attempt);
+      throw ApplicationFailure.retryable("transport failed");
+    },
+    async failRoomAgentBackgroundAction(input: unknown) {
+      failures.push(input);
+    }
+  }, async (taskQueue) => {
+    const handle = await start("roomAgentActionWorkflow", taskQueue, [{
+      bridge: { roomId: ROOM, missionId: MISSION },
+      traceId: "trace:retry"
+    }], "space-room-action:action:legacy");
+    try {
+      await handle.result();
+    } catch (error) {
+      caught = error;
+    }
+  });
+  expect(attempts).toEqual([1, 2, 3, 4, 5]);
+  expect(failures).toEqual([{
+    roomId: ROOM,
+    missionId: MISSION,
+    actionId: "action:legacy",
+    cancelled: false
+  }]);
+  expect(errorText(caught)).toContain("transport failed");
+}, 60_000);
+
 function supervisorActivities(log: Array<Record<string, unknown>>) {
   return {
     async checkRoomAgentSupervisorTurn(item: unknown) {
