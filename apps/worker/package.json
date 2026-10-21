@@ -10,7 +10,7 @@
     "start": "node dist/worker.js",
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run",
+    "test": "npm run build -w @space/contracts && vitest run",
     "temporal:record-histories": "RECORD_WORKFLOW_HISTORIES=1 vitest run tests/workflow-sandbox.test.ts -t \"records the workflow histories\""
   },
   "dependencies": {
