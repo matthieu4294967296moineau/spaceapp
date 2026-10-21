@@ -965,11 +965,18 @@ it("records a child failure code and discards a continuation stopped while it is
     await prepareStarted;
     await supervisor.signal("stopRoomAgentMission", { missionId: null, reason: "Stop" });
     releasePrepare?.();
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    expect(discarded).toEqual([expect.objectContaining({
-      reason: "Superseded while preparing the automatic continuation."
-    })]);
-    await supervisor.terminate();
+    const started = Date.now();
+    try {
+      while (discarded.length === 0) {
+        if (Date.now() - started > 20_000) throw new Error("discard did not run after the stop signal");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(discarded).toEqual([expect.objectContaining({
+        reason: "Superseded while preparing the automatic continuation."
+      })]);
+    } finally {
+      await supervisor.terminate();
+    }
   });
 }, 60_000);
 
@@ -1098,6 +1105,7 @@ it.skipIf(!recordHistories)("records the workflow histories", async () => {
   const original = await readFile(workflowSourcePath, "utf8");
   const needle = 'if (!patched("room-background-continuation-v1")) return legacyRoomAgentSupervisorWorkflow(rawInput);';
   expect(original).toContain(needle);
+  const legacyRecordPath = path.join(path.dirname(workflowSourcePath), "workflows.legacy-record.ts");
   try {
     const dummy = await withWorker({
       async recordDummyTurnStarted() {},
@@ -1220,7 +1228,8 @@ it.skipIf(!recordHistories)("records the workflow histories", async () => {
     expect(mutationAttempts).toEqual([1, 2, 3]);
     await saveHistory("memory-mutation", mutation.workflowId, await firstHistory(mutation));
 
-    await writeFile(workflowSourcePath, original.replace(needle, "return legacyRoomAgentSupervisorWorkflow(rawInput);"));
+    // A copy, not workflows.ts. Killing this recorder must not leave the production source on the legacy branch.
+    await writeFile(legacyRecordPath, original.replace(needle, "return legacyRoomAgentSupervisorWorkflow(rawInput);"));
     const legacyCalls: string[] = [];
     const legacy = await withWorker({
       async markRoomAgentMissionStarted() { legacyCalls.push("started"); },
@@ -1241,7 +1250,7 @@ it.skipIf(!recordHistories)("records the workflow histories", async () => {
       }], "workflow:supervisor-pre-patch");
       await expect(handle.result()).rejects.toBeInstanceOf(WorkflowContinuedAsNewError);
       return handle;
-    });
+    }, { workflowsPath: legacyRecordPath });
     expect(legacyCalls).toEqual(["started", "turn", "finished"]);
     await saveHistory("supervisor-pre-patch", legacy.workflowId, await firstHistory(legacy));
 
@@ -1260,11 +1269,11 @@ it.skipIf(!recordHistories)("records the workflow histories", async () => {
       }], "workflow:supervisor-pre-patch-polls");
       await expect(handle.result()).rejects.toBeInstanceOf(WorkflowContinuedAsNewError);
       return handle;
-    });
+    }, { workflowsPath: legacyRecordPath });
     expect(legacyPolls).toBe(250);
     await saveHistory("supervisor-pre-patch-polls", legacyPollsRun.workflowId, await firstHistory(legacyPollsRun));
   } finally {
-    await writeFile(workflowSourcePath, original);
+    await rm(legacyRecordPath, { force: true });
   }
   expect(await readFile(workflowSourcePath, "utf8")).toBe(original);
 }, 180_000);
